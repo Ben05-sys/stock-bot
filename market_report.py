@@ -1,0 +1,181 @@
+import yfinance as yf
+import os
+from datetime import datetime
+from notifier import send_email
+from email_templates import market_report_html
+from pdf_report import generate_market_pdf
+
+REPORT_DIR = r"C:\Users\91877\Desktop\stock bot"
+
+NIFTY_50_STOCKS = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "HINDUNILVR.NS",
+    "ICICIBANK.NS", "KOTAKBANK.NS", "BHARTIARTL.NS", "ITC.NS", "SBIN.NS",
+    "BAJFINANCE.NS", "LT.NS", "ASIANPAINT.NS", "AXISBANK.NS", "MARUTI.NS",
+    "SUNPHARMA.NS", "WIPRO.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "TITAN.NS",
+    "TECHM.NS", "POWERGRID.NS", "ONGC.NS", "NTPC.NS", "BAJAJFINSV.NS",
+    "HCLTECH.NS", "GRASIM.NS", "DIVISLAB.NS", "JSWSTEEL.NS", "HINDALCO.NS",
+    "TATASTEEL.NS", "TATACONSUM.NS", "ADANIPORTS.NS", "COALINDIA.NS", "DRREDDY.NS",
+    "CIPLA.NS", "BRITANNIA.NS", "EICHERMOT.NS", "APOLLOHOSP.NS", "BAJAJ-AUTO.NS",
+    "HEROMOTOCO.NS", "INDUSINDBK.NS", "SBILIFE.NS", "HDFCLIFE.NS",
+    "M&M.NS", "BPCL.NS", "TATAMOTORS.NS", "SHREECEM.NS", "VEDL.NS", "HDFCAMC.NS"
+]
+
+
+def fetch_index(symbol, name):
+    try:
+        df = yf.Ticker(symbol).history(period="5d", timeout=8)
+        df = df.dropna(subset=["Close"])
+        if len(df) < 2:
+            return None
+        prev_close = df["Close"].iloc[-2]
+        current    = df["Close"].iloc[-1]
+        change     = round(current - prev_close, 2)
+        change_pct = round((change / prev_close) * 100, 2)
+        return {
+            "name": name,
+            "current": round(current, 2),
+            "prev_close": round(prev_close, 2),
+            "change": change,
+            "change_pct": change_pct,
+        }
+    except Exception:
+        return None
+
+
+def fetch_stock_changes():
+    results = []
+    for symbol in NIFTY_50_STOCKS:
+        try:
+            df = yf.Ticker(symbol).history(period="5d", timeout=8)
+            df = df.dropna(subset=["Close"])
+            if len(df) < 2:
+                continue
+            prev  = df["Close"].iloc[-2]
+            cur   = df["Close"].iloc[-1]
+            chg   = round(cur - prev, 2)
+            chg_p = round((chg / prev) * 100, 2)
+            results.append({"symbol": symbol.replace(".NS", ""), "price": round(cur, 2), "change": chg, "change_pct": chg_p})
+        except Exception:
+            continue
+    return results
+
+
+def market_sentiment(nifty_chg, advances, declines):
+    if nifty_chg > 0.5 and advances > declines:
+        return "BULLISH"
+    elif nifty_chg < -0.5 and declines > advances:
+        return "BEARISH"
+    else:
+        return "NEUTRAL"
+
+
+def generate_market_report():
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    now = datetime.now()
+    date_str  = now.strftime("%d %B %Y")
+    file_date = now.strftime("%Y-%m-%d")
+
+    print("Fetching index data...", flush=True)
+    nifty     = fetch_index("^NSEI",    "Nifty 50")
+    banknifty = fetch_index("^NSEBANK", "Bank Nifty")
+    sensex    = fetch_index("^BSESN",   "Sensex")
+
+    print("Fetching stock data...", flush=True)
+    stocks = fetch_stock_changes()
+
+    gainers  = sorted(stocks, key=lambda x: x["change_pct"], reverse=True)[:5]
+    losers   = sorted(stocks, key=lambda x: x["change_pct"])[:5]
+    advances = len([s for s in stocks if s["change"] > 0])
+    declines = len([s for s in stocks if s["change"] < 0])
+
+    nifty_chg = nifty["change_pct"] if nifty else 0
+    sentiment = market_sentiment(nifty_chg, advances, declines)
+
+    sep  = "=" * 62
+    dash = "-" * 62
+
+    lines = [
+        sep,
+        "         STOCK BOT  —  MORNING MARKET REPORT",
+        f"                    {date_str}",
+        sep,
+        "",
+        "MARKET INDICES",
+        dash,
+    ]
+
+    for idx in [nifty, banknifty, sensex]:
+        if idx:
+            arrow = "▲" if idx["change"] >= 0 else "▼"
+            sign  = "+" if idx["change"] >= 0 else ""
+            lines.append(f"  {idx['name']:<14}: {idx['current']:>10,.2f}  {arrow} {sign}{idx['change']} ({sign}{idx['change_pct']}%)")
+        else:
+            lines.append(f"  Data unavailable")
+
+    lines += [
+        "",
+        f"MARKET SENTIMENT : {sentiment}",
+        f"  Advances       : {advances} stocks",
+        f"  Declines       : {declines} stocks",
+        f"  Unchanged      : {len(stocks) - advances - declines} stocks",
+        "",
+        "TOP 5 GAINERS (Nifty 50)",
+        dash,
+    ]
+
+    for s in gainers:
+        lines.append(f"  {s['symbol']:<16}: Rs.{s['price']:>8,.2f}  +{s['change_pct']}%  (+Rs.{s['change']})")
+
+    lines += ["", "TOP 5 LOSERS (Nifty 50)", dash]
+
+    for s in losers:
+        lines.append(f"  {s['symbol']:<16}: Rs.{s['price']:>8,.2f}  {s['change_pct']}%  (Rs.{s['change']})")
+
+    lines += [
+        "",
+        "WHAT TO WATCH TODAY",
+        dash,
+        f"  Bot will scan all 50 Nifty stocks for buy opportunities.",
+        f"  Buy conditions: Above MA50 & MA200, RSI 50-70, Volume > 1.5x avg.",
+        f"  Target: +10% profit per trade | Stop-loss: -5%",
+        "",
+        sep,
+        "     Report auto-generated by Stock Bot (Paper Trading)",
+        f"     Generated on: {now.strftime('%d-%m-%Y at %I:%M %p')}",
+        sep,
+    ]
+
+    report_text = "\n".join(lines)
+
+    report_path = os.path.join(REPORT_DIR, f"MarketReport_{file_date}.txt")
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(report_text)
+    print(f"Market report saved: {report_path}", flush=True)
+
+    # WhatsApp summary
+    wa = [f"MORNING MARKET REPORT - {date_str}", ""]
+    if nifty:
+        sign = "+" if nifty["change"] >= 0 else ""
+        wa.append(f"Nifty 50   : {nifty['current']:,.2f}  {sign}{nifty['change']} ({sign}{nifty['change_pct']}%)")
+    if banknifty:
+        sign = "+" if banknifty["change"] >= 0 else ""
+        wa.append(f"Bank Nifty : {banknifty['current']:,.2f}  {sign}{banknifty['change']} ({sign}{banknifty['change_pct']}%)")
+    if sensex:
+        sign = "+" if sensex["change"] >= 0 else ""
+        wa.append(f"Sensex     : {sensex['current']:,.2f}  {sign}{sensex['change']} ({sign}{sensex['change_pct']}%)")
+
+    wa += [
+        f"\nSentiment: {sentiment}",
+        f"Advances: {advances} | Declines: {declines}",
+        f"\nTop Gainers: " + ", ".join(f"{s['symbol']} +{s['change_pct']}%" for s in gainers[:3]),
+        f"Top Losers : " + ", ".join(f"{s['symbol']} {s['change_pct']}%" for s in losers[:3]),
+        f"\nBot scanning now for buy opportunities...",
+    ]
+
+    html     = market_report_html(nifty, banknifty, sensex, gainers, losers, advances, declines, sentiment)
+    pdf_path = generate_market_pdf(nifty, banknifty, sensex, gainers, losers, advances, declines, sentiment)
+    send_email(f"Stock Bot — Morning Market Report {date_str}", "\n".join(wa), html=html, pdf_path=pdf_path)
+
+
+if __name__ == "__main__":
+    generate_market_report()
