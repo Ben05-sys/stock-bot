@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+portfolio.json
+daily_reports.txt
+PyWhatKit_DB.txt
+*.pdf
+*.txt
