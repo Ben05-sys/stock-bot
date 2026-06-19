@@ -66,6 +66,9 @@ STOCKS = [
 ]
 
 
+NIFTY_INDEX = "^NSEI"
+
+
 def calc_rsi(close, period=14):
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
@@ -74,43 +77,86 @@ def calc_rsi(close, period=14):
     return 100 - (100 / (1 + rs))
 
 
+def calc_atr(df, period=14):
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
+
+
+def _nifty_return_63d():
+    """63-trading-day (~3 month) return of the Nifty 50, used as the benchmark for relative strength."""
+    try:
+        df = yf.Ticker(NIFTY_INDEX).history(period="1y", timeout=8).dropna()
+        if len(df) < 66:
+            return 0.0
+        return (df["Close"].iloc[-2] / df["Close"].iloc[-65] - 1) * 100
+    except Exception:
+        return 0.0
+
+
 def scan_stocks():
-    good_stocks = []
+    """
+    Relative-strength momentum scan:
+      1. Trend filter:  Close > MA50 > MA200 (confirmed uptrend, not a short bounce)
+      2. Momentum filter: RSI(14) between 45-70 (has momentum, not overbought)
+      3. Volume filter: today's volume > 1.2x its 20-day average (real interest, not noise)
+      4. Ranking: among stocks passing all filters, rank by 63-day return minus the
+         Nifty 50's 63-day return — only buy stocks actually beating the index.
+    Each pick also carries its ATR(14), used by main.py to size stop-loss/target
+    to that stock's own volatility instead of a fixed percentage.
+    """
+    nifty_return = _nifty_return_63d()
+    candidates = []
 
     for symbol in STOCKS:
         print(f"  Checking {symbol}...", flush=True)
         try:
-            df = yf.Ticker(symbol).history(period="1y", timeout=8)
-            df = df.dropna()
-
-            if len(df) < 52:
+            df = yf.Ticker(symbol).history(period="1y", timeout=8).dropna()
+            if len(df) < 210:
                 continue
 
-            df["MA50"] = df["Close"].rolling(50).mean()
-            df["RSI"]  = calc_rsi(df["Close"])
+            df["MA50"]     = df["Close"].rolling(50).mean()
+            df["MA200"]    = df["Close"].rolling(200).mean()
+            df["RSI"]      = calc_rsi(df["Close"])
+            df["ATR"]      = calc_atr(df)
+            df["VolAvg20"] = df["Volume"].rolling(20).mean()
 
             # Use previous completed day for conditions (avoid partial today data)
             prev = df.iloc[-2]
             cur  = df.iloc[-1]
 
-            price      = prev["Close"]
-            above_ma50 = price > prev["MA50"]
-            rsi        = prev["RSI"]
-            rsi_ok     = 40 <= rsi <= 75
+            price     = prev["Close"]
+            uptrend   = price > prev["MA50"] > prev["MA200"]
+            rsi       = prev["RSI"]
+            rsi_ok    = 45 <= rsi <= 70
+            volume_ok = prev["Volume"] > 1.2 * prev["VolAvg20"]
 
-            if above_ma50 and rsi_ok:
-                good_stocks.append({
-                    "symbol":     symbol,
-                    "price":      round(cur["Close"], 2),   # buy at today's price
-                    "rsi":        round(rsi, 2),
-                    "prev_close": round(price, 2),
-                })
-                print(f"  PASS: {symbol} RSI={round(rsi,1)}", flush=True)
+            if not (uptrend and rsi_ok and volume_ok):
+                continue
+
+            stock_return = (price / df["Close"].iloc[-65] - 1) * 100
+            rel_strength = round(stock_return - nifty_return, 2)
+            atr          = round(prev["ATR"], 2)
+
+            candidates.append({
+                "symbol":       symbol,
+                "price":        round(cur["Close"], 2),   # buy at today's price
+                "rsi":          round(rsi, 2),
+                "rel_strength": rel_strength,
+                "atr":          atr,
+                "prev_close":   round(price, 2),
+            })
+            print(f"  PASS: {symbol} RS={rel_strength}% RSI={round(rsi,1)} ATR={atr}", flush=True)
 
         except Exception as e:
             print(f"  SKIP {symbol}: {e}", flush=True)
             continue
 
-    # Sort by RSI closest to 55 (sweet spot — momentum without being overbought)
-    good_stocks.sort(key=lambda x: abs(x["rsi"] - 55))
-    return good_stocks[:2]
+    # Rank by relative strength vs Nifty 50 — strongest outperformers first
+    candidates.sort(key=lambda x: x["rel_strength"], reverse=True)
+    return candidates[:2]

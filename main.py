@@ -6,8 +6,13 @@ from scanner import scan_stocks
 from portfolio import load_portfolio, save_portfolio, buy_stock, sell_stock
 from notifier import send_email
 
-TARGET_PROFIT = 0.10   # sell at +10%
-STOP_LOSS = -0.05      # sell at -5%
+STOP_LOSS_ATR    = 1.5   # stop = buy_price - 1.5x ATR
+TARGET_ATR       = 3.0   # target = buy_price + 3x ATR (1:2 risk:reward)
+BREAKEVEN_ATR    = 1.5   # once price gains 1.5x ATR, move stop to breakeven
+
+# Legacy fallback for positions opened before the ATR-based system existed
+LEGACY_STOP_PCT   = -0.05
+LEGACY_TARGET_PCT = 0.10
 
 
 def get_current_price(symbol):
@@ -18,6 +23,15 @@ def get_current_price(symbol):
         return None
 
 
+def _migrate_legacy_position(pos):
+    """Backfill stop_loss/target/atr for positions opened before this system existed."""
+    if pos.get("stop_loss") is None:
+        pos["stop_loss"] = round(pos["buy_price"] * (1 + LEGACY_STOP_PCT), 2)
+    if pos.get("target") is None:
+        pos["target"] = round(pos["buy_price"] * (1 + LEGACY_TARGET_PCT), 2)
+    pos.setdefault("atr", None)
+
+
 def check_exits(portfolio):
     exits = []
     for symbol in list(portfolio["positions"].keys()):
@@ -25,18 +39,27 @@ def check_exits(portfolio):
         if price is None:
             continue
 
-        buy_price = portfolio["positions"][symbol]["buy_price"]
-        change = (price - buy_price) / buy_price
+        pos = portfolio["positions"][symbol]
+        _migrate_legacy_position(pos)
+        buy_price = pos["buy_price"]
+        atr = pos["atr"]
 
-        if change >= TARGET_PROFIT:
-            trade = sell_stock(symbol, price, portfolio, "TARGET HIT")
-            if trade:
-                exits.append(f"SOLD {symbol}: +{trade['profit_pct']}% profit = Rs.{trade['profit']}")
-
-        elif change <= STOP_LOSS:
+        if price <= pos["stop_loss"]:
             trade = sell_stock(symbol, price, portfolio, "STOP LOSS")
             if trade:
                 exits.append(f"SOLD {symbol}: {trade['profit_pct']}% stop-loss = Rs.{trade['profit']}")
+            continue
+
+        if price >= pos["target"]:
+            trade = sell_stock(symbol, price, portfolio, "TARGET HIT")
+            if trade:
+                exits.append(f"SOLD {symbol}: +{trade['profit_pct']}% profit = Rs.{trade['profit']}")
+            continue
+
+        # Trailing stop: once price has gained 1.5x ATR, lock in breakeven
+        if atr and pos["stop_loss"] < buy_price and price >= buy_price + BREAKEVEN_ATR * atr:
+            pos["stop_loss"] = buy_price
+            save_portfolio(portfolio)
 
     return exits
 
@@ -63,9 +86,17 @@ def run_bot():
 
         if new_stocks:
             for stock in new_stocks[: 2 - len(portfolio["positions"])]:
-                shares, cost = buy_stock(stock["symbol"], stock["price"], portfolio)
+                stop_loss = round(stock["price"] - STOP_LOSS_ATR * stock["atr"], 2)
+                target    = round(stock["price"] + TARGET_ATR * stock["atr"], 2)
+                shares, cost = buy_stock(
+                    stock["symbol"], stock["price"], portfolio,
+                    stop_loss=stop_loss, target=target, atr=stock["atr"],
+                )
                 if shares:
-                    lines.append(f"BOUGHT {stock['symbol']} @ Rs.{stock['price']} x {shares} shares = Rs.{cost}")
+                    lines.append(
+                        f"BOUGHT {stock['symbol']} @ Rs.{stock['price']} x {shares} shares = Rs.{cost} "
+                        f"(RS={stock['rel_strength']}% | Stop: Rs.{stop_loss} | Target: Rs.{target})"
+                    )
         else:
             lines.append("No qualifying stocks found today.")
     else:
@@ -103,7 +134,8 @@ def run_bot():
 if __name__ == "__main__":
     print("Stock Paper Trading Bot Started!")
     print("Capital: Rs.10,000 (virtual)")
-    print("Target: +10% per trade | Stop-loss: -5%")
+    print("Strategy: Relative-strength momentum (uptrend + RSI + volume, ranked vs Nifty 50)")
+    print("Risk: ATR-based stop-loss/target (1:2 risk:reward) with breakeven trailing stop")
     print("Running first scan now...\n")
 
     run_bot()

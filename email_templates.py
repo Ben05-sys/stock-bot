@@ -136,8 +136,8 @@ def market_report_html(nifty, banknifty, sensex, gainers, losers, advances, decl
               <tr>
                 <td style='padding:16px 20px;'>
                   <div style='font-size:13px;font-weight:700;color:#1e40af;margin-bottom:6px;'>BOT STRATEGY TODAY</div>
-                  <div style='font-size:13px;color:#1e3a8a;'>Scanning 50 Nifty stocks &nbsp;|&nbsp; Buy: Above MA50 & MA200, RSI 50–70, Volume &gt; 1.5x avg</div>
-                  <div style='font-size:13px;color:#1e3a8a;margin-top:4px;'>Target: <strong>+10% profit</strong> per trade &nbsp;|&nbsp; Stop-loss: <strong>-5%</strong></div>
+                  <div style='font-size:13px;color:#1e3a8a;'>Scanning 200+ NSE stocks &nbsp;|&nbsp; Buy: Uptrend (Close&gt;MA50&gt;MA200), RSI 45-70, Volume &gt; 1.2x avg, ranked by relative strength vs Nifty 50</div>
+                  <div style='font-size:13px;color:#1e3a8a;margin-top:4px;'>Risk: <strong>ATR-based</strong> stop-loss &amp; target (1:2 risk:reward) &nbsp;|&nbsp; Trailing stop to breakeven at +1.5x ATR</div>
                 </td>
               </tr>
             </table>

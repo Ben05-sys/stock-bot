@@ -24,7 +24,7 @@ def save_portfolio(portfolio):
         json.dump(portfolio, f, indent=2)
 
 
-def buy_stock(symbol, price, portfolio):
+def buy_stock(symbol, price, portfolio, stop_loss=None, target=None, atr=None):
     slots_left = 2 - len(portfolio["positions"])
     if slots_left <= 0:
         return None, "Max 2 positions already held"
@@ -44,6 +44,9 @@ def buy_stock(symbol, price, portfolio):
         "buy_price": round(price, 2),
         "cost": cost,
         "buy_date": datetime.now().strftime("%Y-%m-%d"),
+        "stop_loss": stop_loss,
+        "target": target,
+        "atr": atr,
     }
     save_portfolio(portfolio)
     return shares, cost
